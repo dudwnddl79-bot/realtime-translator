@@ -1,25 +1,49 @@
-
 name: APK 자동 빌드
 
 on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: 프로젝트 파일 자동 생성 (검증 완료 버전)
+      - name: 프로젝트 파일 자동 생성
         run: |
-          rm -rf app .github/build.yml *.zip *.html || true
+          set -e
+          rm -rf app settings.gradle.kts build.gradle.kts gradle.properties
           mkdir -p app/src/main/java/com/realtime/translator/service
           mkdir -p app/src/main/res/layout
           mkdir -p app/src/main/res/values
 
           cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "realtime-translator"
           include(":app")
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          kotlin.code.style=official
           EOF
 
           cat > build.gradle.kts <<'EOF'
@@ -53,93 +77,376 @@ jobs:
           dependencies {
               implementation("androidx.core:core-ktx:1.12.0")
               implementation("androidx.appcompat:appcompat:1.6.1")
-              implementation("com.google.android.material:material:1.11.0")
           }
           EOF
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
               <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
               <uses-permission android:name="android.permission.RECORD_AUDIO" />
-              <application android:allowBackup="true" android:label="실시간 번역 자막" android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <application
+                  android:allowBackup="false"
+                  android:icon="@android:drawable/sym_def_app_icon"
+                  android:label="@string/app_name"
+                  android:theme="@style/Theme.Translator">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
-                  <service android:name=".service.AudioCaptureService" android:foregroundServiceType="mediaProjection" />
-                  <service android:name=".service.FloatingSubtitleService" />
+                  <service
+                      android:name=".service.AudioCaptureService"
+                      android:exported="false"
+                      android:foregroundServiceType="mediaProjection" />
+                  <service
+                      android:name=".service.FloatingSubtitleService"
+                      android:exported="false" />
               </application>
           </manifest>
           EOF
 
           cat > app/src/main/res/values/strings.xml <<'EOF'
-          <resources><string name="app_name">실시간 번역 자막</string></resources>
+          <resources>
+              <string name="app_name">실시간 번역 자막</string>
+          </resources>
           EOF
 
           cat > app/src/main/res/values/colors.xml <<'EOF'
-          <resources><color name="black">#FF000000</color><color name="white">#FFFFFFFF</color></resources>
+          <resources>
+              <color name="black">#FF000000</color>
+              <color name="white">#FFFFFFFF</color>
+          </resources>
           EOF
 
           cat > app/src/main/res/values/themes.xml <<'EOF'
-          <resources><style name="Theme.AppCompat.Light.NoActionBar" parent="Theme.AppCompat.Light.NoActionBar"/></resources>
+          <resources>
+              <style name="Theme.Translator" parent="Theme.AppCompat.NoActionBar">
+                  <item name="android:windowBackground">@color/black</item>
+              </style>
+          </resources>
           EOF
 
           cat > app/src/main/res/layout/activity_main.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
-          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:orientation="vertical" android:padding="20dp" android:layout_width="match_parent" android:layout_height="match_parent" android:background="#0F0F0F">
-              <TextView android:text="실시간 AI 번역 - 내부오디오" android:textColor="#FFF" android:textSize="22sp" android:textStyle="bold" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
-              <Button android:id="@+id/btnStart" android:text="번역 시작 (내부오디오 캡처)" android:layout_marginTop="24dp" android:layout_width="match_parent" android:layout_height="60dp"/>
-              <TextView android:id="@+id/tvStatus" android:text="대기중 - 영상 앱에서 소리 재생 시 자동 자막" android:textColor="#AAA" android:layout_marginTop="12dp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
-          </LinearLayout>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="#0F0F0F"
+              android:fillViewport="true">
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:orientation="vertical"
+                  android:padding="20dp">
+                  <TextView
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="실시간 AI 번역 - 내부오디오"
+                      android:textColor="#FFFFFF"
+                      android:textSize="22sp"
+                      android:textStyle="bold" />
+                  <EditText
+                      android:id="@+id/etKey"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="16dp"
+                      android:hint="Gemini API 키 붙여넣기"
+                      android:inputType="textNoSuggestions"
+                      android:maxLines="1"
+                      android:textColor="#FFFFFF"
+                      android:textColorHint="#777777" />
+                  <EditText
+                      android:id="@+id/etModel"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:hint="모델 이름"
+                      android:inputType="textNoSuggestions"
+                      android:maxLines="1"
+                      android:textColor="#FFFFFF"
+                      android:textColorHint="#777777" />
+                  <EditText
+                      android:id="@+id/etGlossary"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:hint="용어집(선택) 예: ミコト=미코토, 先輩=센파이"
+                      android:inputType="textMultiLine"
+                      android:maxLines="3"
+                      android:textColor="#FFFFFF"
+                      android:textColorHint="#777777" />
+                  <LinearLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="8dp"
+                      android:orientation="horizontal">
+                      <Button
+                          android:id="@+id/btnLang"
+                          android:layout_width="0dp"
+                          android:layout_height="wrap_content"
+                          android:layout_weight="1"
+                          android:text="언어: 자동 인식" />
+                      <Button
+                          android:id="@+id/btnTest"
+                          android:layout_width="0dp"
+                          android:layout_height="wrap_content"
+                          android:layout_weight="1"
+                          android:text="키 테스트" />
+                  </LinearLayout>
+                  <LinearLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:orientation="horizontal">
+                      <Button
+                          android:id="@+id/btnFontMinus"
+                          android:layout_width="0dp"
+                          android:layout_height="wrap_content"
+                          android:layout_weight="1"
+                          android:text="글자 -" />
+                      <Button
+                          android:id="@+id/btnFontPlus"
+                          android:layout_width="0dp"
+                          android:layout_height="wrap_content"
+                          android:layout_weight="1"
+                          android:text="글자 +" />
+                      <Button
+                          android:id="@+id/btnAlpha"
+                          android:layout_width="0dp"
+                          android:layout_height="wrap_content"
+                          android:layout_weight="1"
+                          android:text="배경: 보통" />
+                  </LinearLayout>
+                  <Button
+                      android:id="@+id/btnBattery"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="배터리 제한 해제 설정 열기 (삼성 권장)" />
+                  <Button
+                      android:id="@+id/btnStart"
+                      android:layout_width="match_parent"
+                      android:layout_height="60dp"
+                      android:layout_marginTop="16dp"
+                      android:text="번역 시작 (내부오디오 캡처)" />
+                  <Button
+                      android:id="@+id/btnStop"
+                      android:layout_width="match_parent"
+                      android:layout_height="60dp"
+                      android:layout_marginTop="8dp"
+                      android:text="중지" />
+                  <TextView
+                      android:id="@+id/tvStatus"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="12dp"
+                      android:text="API 키 입력 후 '키 테스트'로 확인하고, 시작을 누른 뒤 영상 앱에서 소리를 재생하세요"
+                      android:textColor="#AAAAAA" />
+              </LinearLayout>
+          </ScrollView>
           EOF
 
           cat > app/src/main/res/layout/overlay_subtitle.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
-          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:orientation="vertical" android:background="#CC000000" android:padding="14dp" android:layout_width="match_parent" android:layout_height="wrap_content">
-              <TextView android:id="@+id/tvKorean" android:text="한글 자막이 여기에 표시됩니다" android:textColor="#FFFFFF" android:textSize="20sp" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:background="#CC000000"
+              android:orientation="vertical"
+              android:padding="14dp">
+              <TextView
+                  android:id="@+id/tvPrev"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:textColor="#99FFFFFF"
+                  android:textSize="15sp"
+                  android:visibility="gone" />
+              <TextView
+                  android:id="@+id/tvKorean"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:shadowColor="#000000"
+                  android:shadowDx="1"
+                  android:shadowDy="1"
+                  android:shadowRadius="3"
+                  android:text="한글 자막이 여기에 표시됩니다"
+                  android:textColor="#FFFFFF"
+                  android:textSize="20sp"
+                  android:textStyle="bold" />
           </LinearLayout>
           EOF
 
           cat > app/src/main/java/com/realtime/translator/MainActivity.kt <<'EOF'
           package com.realtime.translator
+
+          import android.Manifest
           import android.app.Activity
+          import android.content.Context
           import android.content.Intent
+          import android.content.pm.PackageManager
           import android.media.projection.MediaProjectionManager
           import android.net.Uri
+          import android.os.Build
           import android.os.Bundle
           import android.provider.Settings
           import android.widget.Button
+          import android.widget.EditText
           import android.widget.TextView
+          import androidx.activity.result.contract.ActivityResultContracts
           import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.content.ContextCompat
           import com.realtime.translator.service.AudioCaptureService
+          import com.realtime.translator.service.Cfg
+          import com.realtime.translator.service.Translator
+
           class MainActivity : AppCompatActivity() {
-              private val CODE = 1001
+
               private lateinit var mgr: MediaProjectionManager
+              private lateinit var status: TextView
+              private lateinit var etKey: EditText
+              private lateinit var etModel: EditText
+              private lateinit var etGlossary: EditText
+              private lateinit var btnLang: Button
+              private lateinit var btnAlpha: Button
+
+              private val langCodes = arrayOf("auto", "ja", "zh", "en", "ru")
+              private val langNames = arrayOf("자동 인식", "일본어", "중국어", "영어", "러시아어")
+              private val alphaVals = intArrayOf(0xE6, 0xCC, 0x80)
+              private val alphaNames = arrayOf("진하게", "보통", "연하게")
+
+              private val projectionLauncher =
+                  registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+                      val d = r.data
+                      if (r.resultCode == Activity.RESULT_OK && d != null) {
+                          val i = Intent(this, AudioCaptureService::class.java)
+                              .putExtra("resultCode", r.resultCode)
+                              .putExtra("data", d)
+                          ContextCompat.startForegroundService(this, i)
+                          status.text = "캡처 시작 - 이제 영상 앱에서 소리를 재생하세요 (알림창에서도 중지할 수 있어요)"
+                      } else {
+                          status.text = "화면 캡처 권한이 거부되었습니다"
+                      }
+                  }
+
+              private val permLauncher =
+                  registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+                      if (hasAudioPermission()) {
+                          projectionLauncher.launch(mgr.createScreenCaptureIntent())
+                      } else {
+                          status.text = "녹음 권한이 필요합니다 (내부오디오 캡처 API 필수 조건)"
+                      }
+                  }
+
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   setContentView(R.layout.activity_main)
-                  if (!Settings.canDrawOverlays(this)) {
-                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                  mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                  status = findViewById<TextView>(R.id.tvStatus)
+                  etKey = findViewById<EditText>(R.id.etKey)
+                  etModel = findViewById<EditText>(R.id.etModel)
+                  etGlossary = findViewById<EditText>(R.id.etGlossary)
+                  btnLang = findViewById<Button>(R.id.btnLang)
+                  btnAlpha = findViewById<Button>(R.id.btnAlpha)
+
+                  val p = sp()
+                  etKey.setText(p.getString("key", ""))
+                  etModel.setText(p.getString("model", Translator.DEFAULT_MODEL))
+                  etGlossary.setText(p.getString("glossary", ""))
+                  refreshButtons()
+
+                  btnLang.setOnClickListener {
+                      val i = langCodes.indexOf(sp().getString("lang", "auto")).coerceAtLeast(0)
+                      sp().edit().putString("lang", langCodes[(i + 1) % langCodes.size]).apply()
+                      refreshButtons()
                   }
-                  mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                  findViewById<Button>(R.id.btnStart).setOnClickListener {
-                      startActivityForResult(mgr.createScreenCaptureIntent(), CODE)
+                  btnAlpha.setOnClickListener {
+                      val cur = alphaVals.indexOf(sp().getInt("bgAlpha", 0xCC))
+                      val i = if (cur < 0) 1 else cur
+                      sp().edit().putInt("bgAlpha", alphaVals[(i + 1) % alphaVals.size]).apply()
+                      refreshButtons()
+                  }
+                  findViewById<Button>(R.id.btnFontMinus).setOnClickListener { changeFont(-2) }
+                  findViewById<Button>(R.id.btnFontPlus).setOnClickListener { changeFont(2) }
+                  findViewById<Button>(R.id.btnTest).setOnClickListener { testKey() }
+                  findViewById<Button>(R.id.btnBattery).setOnClickListener {
+                      startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                      status.text = "목록에서 이 앱을 찾아 '최적화 안 함'으로 바꾸면 오래 켜둬도 안 꺼져요"
+                  }
+                  findViewById<Button>(R.id.btnStart).setOnClickListener { begin() }
+                  findViewById<Button>(R.id.btnStop).setOnClickListener {
+                      stopService(Intent(this, AudioCaptureService::class.java))
+                      status.text = "중지됨"
                   }
               }
-              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-                  super.onActivityResult(requestCode, resultCode, data)
-                  if (requestCode == CODE && resultCode == Activity.RESULT_OK && data != null) {
-                      val i = Intent(this, AudioCaptureService::class.java).apply {
-                          putExtra("resultCode", resultCode)
-                          putExtra("data", data)
-                      }
-                      startForegroundService(i)
-                      findViewById<TextView>(R.id.tvStatus).text = "캡처 시작 - 이제 유튜브/넷플릭스 재생하세요"
+
+              override fun onPause() {
+                  saveFields()
+                  super.onPause()
+              }
+
+              private fun sp() = getSharedPreferences(Cfg.PREFS, Context.MODE_PRIVATE)
+
+              private fun saveFields() {
+                  sp().edit()
+                      .putString("key", etKey.text.toString().trim())
+                      .putString("model", etModel.text.toString().trim())
+                      .putString("glossary", etGlossary.text.toString().trim())
+                      .apply()
+              }
+
+              private fun refreshButtons() {
+                  val p = sp()
+                  val li = langCodes.indexOf(p.getString("lang", "auto")).coerceAtLeast(0)
+                  btnLang.text = "언어: " + langNames[li]
+                  val cur = alphaVals.indexOf(p.getInt("bgAlpha", 0xCC))
+                  btnAlpha.text = "배경: " + alphaNames[if (cur < 0) 1 else cur]
+              }
+
+              private fun changeFont(delta: Int) {
+                  val f = (sp().getInt("fontSp", 20) + delta).coerceIn(14, 36)
+                  sp().edit().putInt("fontSp", f).apply()
+                  status.text = "자막 글자 크기: " + f
+              }
+
+              private fun testKey() {
+                  saveFields()
+                  val cfg = Cfg.load(this)
+                  status.text = "키/모델 테스트 중..."
+                  Thread {
+                      val msg = Translator.test(cfg)
+                      runOnUiThread { status.text = msg }
+                  }.start()
+              }
+
+              private fun hasAudioPermission() =
+                  ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                      PackageManager.PERMISSION_GRANTED
+
+              private fun begin() {
+                  saveFields()
+                  if (Cfg.load(this).key.isEmpty()) {
+                      status.text = "먼저 Gemini API 키를 입력하세요 (aistudio.google.com/apikey 에서 발급)"
+                      return
+                  }
+                  if (!Settings.canDrawOverlays(this)) {
+                      status.text = "'다른 앱 위에 표시'를 켠 뒤 돌아와서 다시 누르세요"
+                      startActivity(
+                          Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName))
+                      )
+                      return
+                  }
+                  val need = mutableListOf<String>()
+                  if (!hasAudioPermission()) need.add(Manifest.permission.RECORD_AUDIO)
+                  if (Build.VERSION.SDK_INT >= 33 &&
+                      ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+                      PackageManager.PERMISSION_GRANTED
+                  ) need.add(Manifest.permission.POST_NOTIFICATIONS)
+                  if (need.isNotEmpty()) {
+                      permLauncher.launch(need.toTypedArray())
+                  } else {
+                      projectionLauncher.launch(mgr.createScreenCaptureIntent())
                   }
               }
           }
@@ -147,63 +454,760 @@ jobs:
 
           cat > app/src/main/java/com/realtime/translator/service/AudioCaptureService.kt <<'EOF'
           package com.realtime.translator.service
-          import android.app.*
+
+          import android.app.Activity
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
           import android.content.Context
           import android.content.Intent
-          import android.media.*
+          import android.content.pm.PackageManager
+          import android.content.pm.ServiceInfo
+          import android.graphics.drawable.Icon
+          import android.media.AudioAttributes
+          import android.media.AudioFormat
+          import android.media.AudioPlaybackCaptureConfiguration
+          import android.media.AudioRecord
           import android.media.projection.MediaProjection
           import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Handler
           import android.os.IBinder
+          import android.os.Looper
+          import android.widget.Toast
+          import androidx.core.content.ContextCompat
+          import java.util.concurrent.LinkedBlockingDeque
+          import java.util.concurrent.TimeUnit
+          import java.util.concurrent.atomic.AtomicInteger
+
           class AudioCaptureService : Service() {
+
+              private class Job(val seq: Int, val pcm: ShortArray, val t0: Long)
+              private class Done(val r: TranslateResult?, val ms: Long)
+
               private var projection: MediaProjection? = null
               private var record: AudioRecord? = null
-              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-                  val rc = intent?.getIntExtra("resultCode", -1) ?: -1
-                  val data = intent?.getParcelableExtra<Intent>("data")
-                  startForeground(1, notification())
-                  val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                  projection = mpm.getMediaProjection(rc, data!!)
-                  val capConfig = AudioPlaybackCaptureConfiguration.Builder(projection!!)
-                      .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                      .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                      .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                      .build()
-                  val fmt = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(16000).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
-                  record = AudioRecord.Builder().setAudioFormat(fmt).setAudioPlaybackCaptureConfig(capConfig).setBufferSizeInBytes(2*1024*1024).build()
-                  startService(Intent(this, FloatingSubtitleService::class.java))
-                  record?.startRecording()
-                  return START_STICKY
-              }
-              private fun notification(): Notification {
-                  val ch = NotificationChannel("trans", "번역", NotificationManager.IMPORTANCE_LOW)
-                  (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
-                  return Notification.Builder(this, "trans").setContentTitle("내부오디오 번역 중").setContentText("영상 소리를 캡처 중").setSmallIcon(android.R.drawable.ic_btn_speak_now).build()
-              }
+              private var capThread: Thread? = null
+              private val workers = ArrayList<Thread>()
+              @Volatile private var running = false
+
+              private val queue = LinkedBlockingDeque<Job>()
+              private val seqGen = AtomicInteger(0)
+
+              // 아래 4개는 synchronized(ready) 안에서만 접근
+              private val ready = HashMap<Int, Done>()
+              private var nextShow = 0
+              private val recent = ArrayList<String>()
+              private var nOk = 0
+              private var sumMs = 0L
+
               override fun onBind(i: Intent?): IBinder? = null
-              override fun onDestroy() { record?.stop(); record?.release(); projection?.stop(); super.onDestroy() }
+
+              /** 시작 실패 원인을 사용자에게 보여주고 종료 */
+              private fun fail(msg: String) {
+                  Handler(Looper.getMainLooper()).post {
+                      Toast.makeText(applicationContext, msg, Toast.LENGTH_LONG).show()
+                  }
+                  stopSelf()
+              }
+
+              @Suppress("DEPRECATION")
+              private fun readData(i: Intent?): Intent? =
+                  if (Build.VERSION.SDK_INT >= 33) i?.getParcelableExtra("data", Intent::class.java)
+                  else i?.getParcelableExtra<Intent>("data")
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == ACTION_STOP) {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  val rc = intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED
+                  val data = readData(intent)
+                  if (rc != Activity.RESULT_OK || data == null) {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  if (running) return START_NOT_STICKY
+
+                  // 1) 반드시 getMediaProjection() 보다 먼저 포그라운드 시작 (Android 14 요구사항)
+                  startForeground(1, buildNotification("영상 소리를 캡처해 한글 자막으로 번역 중"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+
+                  if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) !=
+                      PackageManager.PERMISSION_GRANTED
+                  ) {
+                      fail("녹음 권한이 없어요. 앱 설정에서 허용해 주세요")
+                      return START_NOT_STICKY
+                  }
+
+                  try {
+                      val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                      val p = mpm.getMediaProjection(rc, data)
+                      projection = p
+                      // 사용자가 퀵패널에서 캡처를 끄면 서비스 종료
+                      p.registerCallback(object : MediaProjection.Callback() {
+                          override fun onStop() { stopSelf() }
+                      }, null)
+
+                      // 2) 내부 오디오만 (마이크 아님)
+                      val cfg = AudioPlaybackCaptureConfiguration.Builder(p)
+                          .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                          .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                          .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                          .build()
+                      val fmt = AudioFormat.Builder()
+                          .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                          .setSampleRate(16000)
+                          .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                          .build()
+                      val rec = AudioRecord.Builder()
+                          .setAudioFormat(fmt)
+                          .setAudioPlaybackCaptureConfig(cfg)
+                          .setBufferSizeInBytes(2 * 1024 * 1024)
+                          .build()
+                      if (rec.state != AudioRecord.STATE_INITIALIZED) {
+                          rec.release()
+                          fail("내부 오디오 캡처를 시작하지 못했어요 (이 기기/설정에서 미지원)")
+                          return START_NOT_STICKY
+                      }
+                      record = rec
+                  } catch (e: Exception) {
+                      fail("캡처 시작 실패: " + (e.message ?: e.javaClass.simpleName))
+                      return START_NOT_STICKY
+                  }
+
+                  startService(Intent(this, FloatingSubtitleService::class.java))
+                  running = true
+                  val rec = record!!
+                  capThread = Thread { captureLoop(rec) }.also { it.start() }
+                  for (i in 0 until 2) {
+                      val t = Thread { workLoop() }
+                      t.isDaemon = true
+                      t.start()
+                      workers.add(t)
+                  }
+                  return START_NOT_STICKY
+              }
+
+              /** 100ms 단위로 읽으면서 말소리 구간을 잘라 번역 대기열에 넣는다 */
+              private fun captureLoop(rec: AudioRecord) {
+                  val frame = ShortArray(Segmenter.FRAME)
+                  val seg = Segmenter()
+                  var peak = 0.0
+                  val start = System.currentTimeMillis()
+                  var lastDiag = start
+                  var lastActive = start
+                  try {
+                      rec.startRecording()
+                      while (running) {
+                          val n = rec.read(frame, 0, frame.size)
+                          if (n < 0) break
+                          if (n == 0) continue
+                          val out = seg.feed(frame, n)
+                          val rms = seg.lastRms
+                          if (rms > peak) peak = rms
+                          val now = System.currentTimeMillis()
+                          if (rms > Segmenter.MIN_THRESH) lastActive = now
+                          if (out != null) submit(out)
+
+                          if (now - lastDiag >= 15000) {
+                              if (peak < 40.0) {
+                                  FloatingSubtitleService.show("소리가 안 잡혀요 - 영상이 재생 중인지, 이 앱이 캡처를 막는지 확인하세요", 8000, true)
+                              }
+                              peak = 0.0
+                              lastDiag = now
+                          }
+                          if (now - lastActive >= IDLE_MS) {
+                              Handler(Looper.getMainLooper()).post {
+                                  Toast.makeText(applicationContext, "10분간 소리가 없어 자동 종료했어요", Toast.LENGTH_LONG).show()
+                              }
+                              stopSelf()
+                              break
+                          }
+                      }
+                  } catch (e: Exception) {
+                      // 종료 중 stop()/release() 와의 경합은 무시
+                  }
+              }
+
+              private fun submit(pcm: ShortArray) {
+                  queue.addLast(Job(seqGen.getAndIncrement(), pcm, System.nanoTime()))
+                  // 밀리면 가장 오래된 것을 버려서 지연이 쌓이지 않게 함
+                  while (queue.size > 3) {
+                      val old = queue.pollFirst() ?: break
+                      deliver(old.seq, null, 0L)
+                  }
+              }
+
+              private fun workLoop() {
+                  while (running) {
+                      var j: Job? = null
+                      try {
+                          j = queue.poll(500, TimeUnit.MILLISECONDS)
+                      } catch (e: InterruptedException) {
+                          break
+                      }
+                      val job = j ?: continue
+                      val cfg = Cfg.load(this)
+                      val prev = synchronized(ready) { ArrayList(recent) }
+                      val r = Translator.translate(job.pcm, cfg, prev)
+                      if (!running) break
+                      val ms = (System.nanoTime() - job.t0) / 1_000_000L
+                      deliver(job.seq, r, ms)
+                      val err = r.error
+                      if (err != null && err.startsWith("요청 한도")) {
+                          try { Thread.sleep(3000) } catch (e: InterruptedException) { break }
+                      }
+                  }
+              }
+
+              /** 결과를 번호 순서대로 화면에 올린다 (먼저 끝난 번역이 순서를 앞지르지 않게) */
+              private fun deliver(seq: Int, r: TranslateResult?, ms: Long) {
+                  var notify = false
+                  synchronized(ready) {
+                      ready[seq] = Done(r, ms)
+                      while (ready.containsKey(nextShow)) {
+                          val d = ready.remove(nextShow)
+                          nextShow++
+                          val x = d?.r ?: continue
+                          val err = x.error
+                          val txt = x.text
+                          if (err != null) {
+                              FloatingSubtitleService.show("⚠ " + err, 6000, true)
+                          } else if (txt != null) {
+                              recent.add(txt)
+                              while (recent.size > 2) recent.removeAt(0)
+                              nOk++
+                              sumMs += d.ms
+                              notify = true
+                              FloatingSubtitleService.show(txt, (3500L + 100L * txt.length).coerceAtMost(9000L), false)
+                          }
+                      }
+                  }
+                  if (notify) updateNotification()
+              }
+
+              private fun updateNotification() {
+                  val text: String
+                  synchronized(ready) {
+                      val avg = if (nOk > 0) sumMs / nOk / 1000.0 else 0.0
+                      text = "번역 " + nOk + "건 · 평균 지연 " + "%.1f".format(avg) + "초"
+                  }
+                  val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  nm.notify(1, buildNotification(text))
+              }
+
+              private fun buildNotification(text: String): Notification {
+                  val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  nm.createNotificationChannel(NotificationChannel(CHANNEL, "번역", NotificationManager.IMPORTANCE_LOW))
+                  val stopIntent = Intent(this, AudioCaptureService::class.java).setAction(ACTION_STOP)
+                  val pi = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                  val act = Notification.Action.Builder(
+                      Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "중지", pi
+                  ).build()
+                  return Notification.Builder(this, CHANNEL)
+                      .setContentTitle("내부오디오 번역 중")
+                      .setContentText(text)
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setOngoing(true)
+                      .addAction(act)
+                      .build()
+              }
+
+              override fun onDestroy() {
+                  running = false
+                  queue.clear()
+                  for (t in workers) t.interrupt()
+                  try { record?.stop() } catch (e: Exception) { }
+                  capThread?.join(500)
+                  try { record?.release() } catch (e: Exception) { }
+                  try { projection?.stop() } catch (e: Exception) { }
+                  stopService(Intent(this, FloatingSubtitleService::class.java))
+                  super.onDestroy()
+              }
+
+              companion object {
+                  private const val ACTION_STOP = "com.realtime.translator.STOP"
+                  private const val CHANNEL = "trans"
+                  private const val IDLE_MS = 10 * 60 * 1000L
+              }
           }
           EOF
 
           cat > app/src/main/java/com/realtime/translator/service/FloatingSubtitleService.kt <<'EOF'
           package com.realtime.translator.service
+
+          import android.annotation.SuppressLint
           import android.app.Service
+          import android.content.Context
           import android.content.Intent
+          import android.content.res.Configuration
           import android.graphics.PixelFormat
+          import android.os.Handler
           import android.os.IBinder
+          import android.os.Looper
+          import android.view.Gravity
+          import android.view.LayoutInflater
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewGroup
           import android.view.WindowManager
+          import android.widget.TextView
           import com.realtime.translator.R
+
           class FloatingSubtitleService : Service() {
+
               private var wm: WindowManager? = null
-              private var view: android.view.View? = null
+              private var root: View? = null
+              private var tv: TextView? = null
+              private var tvPrev: TextView? = null
+              private var lp: WindowManager.LayoutParams? = null
+              private var lastSubtitle = ""
+              private val hide = Runnable {
+                  root?.visibility = View.GONE
+                  lastSubtitle = ""
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              @SuppressLint("ClickableViewAccessibility", "InflateParams")
               override fun onCreate() {
                   super.onCreate()
-                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
-                  val p = WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = android.view.Gravity.BOTTOM; y = 100 }
-                  view = layoutInflater.inflate(R.layout.overlay_subtitle, null)
-                  wm?.addView(view, p)
+                  val manager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  wm = manager
+                  val sp = getSharedPreferences(Cfg.PREFS, Context.MODE_PRIVATE)
+                  val dm = resources.displayMetrics
+                  val w = (dm.widthPixels * 0.92f).toInt()
+                  val px = sp.getInt("posX", -1)
+                  val py = sp.getInt("posY", -1)
+                  val params = WindowManager.LayoutParams(
+                      w,
+                      ViewGroup.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  params.gravity = Gravity.TOP or Gravity.START
+                  params.x = if (px < 0) (dm.widthPixels - w) / 2 else px
+                  params.y = if (py < 0) (dm.heightPixels * 0.72f).toInt() else py
+                  clamp(params)
+                  lp = params
+
+                  val v = LayoutInflater.from(this).inflate(R.layout.overlay_subtitle, null)
+                  tv = v.findViewById<TextView>(R.id.tvKorean)
+                  tvPrev = v.findViewById<TextView>(R.id.tvPrev)
+
+                  // 드래그로 위치 이동, 손을 떼면 위치 기억
+                  var startX = 0
+                  var startY = 0
+                  var downX = 0f
+                  var downY = 0f
+                  v.setOnTouchListener { _, e ->
+                      when (e.actionMasked) {
+                          MotionEvent.ACTION_DOWN -> {
+                              startX = params.x
+                              startY = params.y
+                              downX = e.rawX
+                              downY = e.rawY
+                              true
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              params.x = startX + (e.rawX - downX).toInt()
+                              params.y = startY + (e.rawY - downY).toInt()
+                              clamp(params)
+                              try { manager.updateViewLayout(v, params) } catch (ex: Exception) { }
+                              true
+                          }
+                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                              sp.edit().putInt("posX", params.x).putInt("posY", params.y).apply()
+                              true
+                          }
+                          else -> false
+                      }
+                  }
+                  manager.addView(v, params)
+                  root = v
+                  instance = this
+                  applyStyle()
+                  tv?.text = "자막 준비 완료 - 이 창을 드래그해서 위치를 옮기세요"
+                  main.postDelayed(hide, 6000)
               }
-              override fun onDestroy() { view?.let { wm?.removeView(it) }; super.onDestroy() }
-              override fun onBind(intent: Intent?): IBinder? = null
+
+              private fun clamp(p: WindowManager.LayoutParams) {
+                  val dm = resources.displayMetrics
+                  p.x = p.x.coerceIn(0, maxOf(0, dm.widthPixels - p.width))
+                  p.y = p.y.coerceIn(0, maxOf(0, dm.heightPixels - 120))
+              }
+
+              /** 글자 크기/배경 농도를 설정에서 읽어 즉시 반영 */
+              private fun applyStyle() {
+                  val sp = getSharedPreferences(Cfg.PREFS, Context.MODE_PRIVATE)
+                  val size = sp.getInt("fontSp", 20)
+                  val alpha = sp.getInt("bgAlpha", 0xCC)
+                  tv?.textSize = size.toFloat()
+                  tvPrev?.textSize = size * 0.75f
+                  root?.setBackgroundColor(alpha shl 24)
+              }
+
+              override fun onConfigurationChanged(newConfig: Configuration) {
+                  super.onConfigurationChanged(newConfig)
+                  val p = lp ?: return
+                  p.width = (resources.displayMetrics.widthPixels * 0.92f).toInt()
+                  clamp(p)
+                  root?.let { try { wm?.updateViewLayout(it, p) } catch (e: Exception) { } }
+              }
+
+              override fun onDestroy() {
+                  instance = null
+                  main.removeCallbacks(hide)
+                  root?.let { try { wm?.removeView(it) } catch (e: Exception) { } }
+                  root = null
+                  super.onDestroy()
+              }
+
+              companion object {
+                  @Volatile private var instance: FloatingSubtitleService? = null
+                  private val main = Handler(Looper.getMainLooper())
+
+                  /**
+                   * 어느 스레드에서든 호출 가능. holdMs 뒤에 자막창을 숨긴다.
+                   * isStatus=true 면 안내/오류 문구라서 "직전 자막" 줄에 쌓지 않는다.
+                   */
+                  fun show(text: String, holdMs: Long = 7000, isStatus: Boolean = false) {
+                      main.post {
+                          val s = instance ?: return@post
+                          s.applyStyle()
+                          val prevView = s.tvPrev
+                          if (isStatus) {
+                              prevView?.visibility = View.GONE
+                          } else {
+                              val visible = s.root?.visibility == View.VISIBLE
+                              if (visible && s.lastSubtitle.isNotEmpty()) {
+                                  prevView?.text = s.lastSubtitle
+                                  prevView?.visibility = View.VISIBLE
+                              } else {
+                                  prevView?.visibility = View.GONE
+                              }
+                              s.lastSubtitle = text
+                          }
+                          s.tv?.text = text
+                          s.root?.visibility = View.VISIBLE
+                          main.removeCallbacks(s.hide)
+                          main.postDelayed(s.hide, holdMs)
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/realtime/translator/service/Translator.kt <<'EOF'
+          package com.realtime.translator.service
+
+          import android.util.Base64
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.IOException
+          import java.net.HttpURLConnection
+          import java.net.URL
+
+          data class TranslateResult(val text: String?, val error: String?)
+
+          /** 음성(PCM 16kHz mono) -> 한국어 자막. Gemini 한 번 호출로 인식+번역을 동시에 처리. */
+          object Translator {
+              const val DEFAULT_MODEL = "gemini-3.8-flash"
+
+              // 모델이 thinkingLevel 을 거부하면(400) 한 번만 끄고 재시도
+              @Volatile private var thinking = true
+
+              private class Raw(val code: Int, val body: String)
+
+              fun translate(pcm: ShortArray, cfg: Cfg, prev: List<String>): TranslateResult {
+                  if (cfg.key.isEmpty()) return TranslateResult(null, "API 키가 비어 있어요")
+                  val b64 = Base64.encodeToString(Wav.encode(pcm, 16000), Base64.NO_WRAP)
+                  val parts = JSONArray()
+                      .put(JSONObject().put("text", Sub.prompt(cfg.lang, cfg.glossary, prev)))
+                      .put(JSONObject().put("inline_data", JSONObject().put("mime_type", "audio/wav").put("data", b64)))
+                  return send(parts, cfg, true)
+              }
+
+              /** 키/모델이 맞는지 짧은 텍스트 요청으로 확인 */
+              fun test(cfg: Cfg): String {
+                  if (cfg.key.isEmpty()) return "❌ API 키를 먼저 입력하세요"
+                  val t0 = System.nanoTime()
+                  val parts = JSONArray().put(JSONObject().put("text", "OK 라고만 답해."))
+                  val r = send(parts, cfg, false)
+                  val ms = (System.nanoTime() - t0) / 1_000_000L
+                  val err = r.error
+                  return if (err != null) "❌ " + err else "✅ 키와 모델 정상 (" + cfg.model + ", " + ms + "ms)"
+              }
+
+              private fun send(parts: JSONArray, cfg: Cfg, retry: Boolean): TranslateResult {
+                  var attempt = 0
+                  while (true) {
+                      attempt++
+                      try {
+                          var r = call(parts, cfg, thinking)
+                          if (r.code == 400 && thinking) {
+                              thinking = false
+                              r = call(parts, cfg, false)
+                          }
+                          if (r.code >= 500 && retry && attempt < 2) {
+                              Thread.sleep(400)
+                              continue
+                          }
+                          return parse(r)
+                      } catch (e: IOException) {
+                          if (retry && attempt < 2) {
+                              Thread.sleep(400)
+                              continue
+                          }
+                          return TranslateResult(null, "네트워크 오류: " + (e.message ?: e.javaClass.simpleName))
+                      } catch (e: Exception) {
+                          return TranslateResult(null, "오류: " + (e.message ?: e.javaClass.simpleName))
+                      }
+                  }
+              }
+
+              private fun call(parts: JSONArray, cfg: Cfg, think: Boolean): Raw {
+                  val gen = JSONObject().put("temperature", 0.2)
+                  if (think) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
+                  val body = JSONObject()
+                      .put("contents", JSONArray().put(JSONObject().put("parts", parts)))
+                      .put("generationConfig", gen)
+
+                  val url = URL("https://generativelanguage.googleapis.com/v1beta/models/" + cfg.model + ":generateContent")
+                  val c = url.openConnection() as HttpURLConnection
+                  try {
+                      c.requestMethod = "POST"
+                      c.connectTimeout = 8000
+                      c.readTimeout = 25000
+                      c.doOutput = true
+                      c.setRequestProperty("Content-Type", "application/json")
+                      c.setRequestProperty("x-goog-api-key", cfg.key)
+                      c.outputStream.use { it.write(body.toString().toByteArray()) }
+                      val code = c.responseCode
+                      val st = if (code in 200..299) c.inputStream else c.errorStream
+                      val text = st?.bufferedReader()?.use { it.readText() } ?: ""
+                      return Raw(code, text)
+                  } finally {
+                      c.disconnect()
+                  }
+              }
+
+              private fun parse(r: Raw): TranslateResult {
+                  if (r.code !in 200..299) {
+                      val msg = try {
+                          JSONObject(r.body).getJSONObject("error").getString("message")
+                      } catch (e: Exception) {
+                          r.body
+                      }
+                      val head = when (r.code) {
+                          400 -> "요청 오류"
+                          401, 403 -> "API 키/권한 오류"
+                          404 -> "모델 이름 오류"
+                          429 -> "요청 한도 초과(잠시 후 자동 재시도)"
+                          else -> "서버 오류"
+                      }
+                      return TranslateResult(null, head + " (" + r.code + ") " + msg.take(60))
+                  }
+                  return try {
+                      val parts = JSONObject(r.body).optJSONArray("candidates")
+                          ?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+                      val sb = StringBuilder()
+                      if (parts != null) {
+                          for (i in 0 until parts.length()) {
+                              val p = parts.getJSONObject(i)
+                              if (!p.optBoolean("thought", false)) sb.append(p.optString("text", ""))
+                          }
+                      }
+                      TranslateResult(Sub.clean(sb.toString()), null)
+                  } catch (e: Exception) {
+                      TranslateResult(null, "응답 해석 오류")
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/realtime/translator/service/Cfg.kt <<'EOF'
+          package com.realtime.translator.service
+
+          import android.content.Context
+
+          /** 앱 설정(API 키, 모델, 언어, 용어집). SharedPreferences "cfg" 에서 읽는다. */
+          data class Cfg(val key: String, val model: String, val lang: String, val glossary: String) {
+              companion object {
+                  const val PREFS = "cfg"
+
+                  fun load(ctx: Context): Cfg {
+                      val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                      val model = (p.getString("model", "") ?: "").trim()
+                      return Cfg(
+                          (p.getString("key", "") ?: "").trim(),
+                          if (model.isEmpty()) Translator.DEFAULT_MODEL else model,
+                          p.getString("lang", "auto") ?: "auto",
+                          (p.getString("glossary", "") ?: "").trim()
+                      )
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/realtime/translator/service/Segmenter.kt <<'EOF'
+          package com.realtime.translator.service
+
+          import kotlin.math.sqrt
+
+          /**
+           * 100ms 프레임을 계속 넣으면 "말소리 한 덩어리"가 끝날 때마다 PCM 을 돌려준다.
+           * - 배경 소음 수준을 따라가는 적응형 문턱 (조용한 방 ~ 시끄러운 배경음악)
+           * - 0.5초 쉬면 문장 끝, 3초 넘게 말하다 짧게 쉬면 미리 끊어서 지연 감소, 최대 6초
+           */
+          class Segmenter {
+              private val seg = ShortArray(MAX + FRAME * 2)
+              private val pre = ShortArray(FRAME)
+              private var preLen = 0
+              private var len = 0
+              private var speech = 0
+              private var quiet = 0
+              private var inSeg = false
+              private var noise = 100.0
+
+              var lastRms = 0.0
+                  private set
+
+              fun feed(f: ShortArray, n: Int): ShortArray? {
+                  var sum = 0.0
+                  for (k in 0 until n) {
+                      val s = f[k].toDouble()
+                      sum += s * s
+                  }
+                  val rms = sqrt(sum / n)
+                  lastRms = rms
+
+                  val thr = (noise * 2.0).coerceIn(MIN_THRESH, MAX_THRESH)
+                  val loud = rms > thr
+                  // 소음 수준 추적: 내려갈 땐 빠르게, 올라갈 땐 아주 천천히
+                  // (처음부터 시끄러운 배경음악도 몇 초 안에 "배경"으로 인식, 짧은 대사는 거의 영향 없음)
+                  noise = if (rms < noise) noise * 0.9 + rms * 0.1 else noise + (rms - noise) * 0.005
+
+                  var out: ShortArray? = null
+                  if (!inSeg && loud) {
+                      inSeg = true
+                      len = 0
+                      speech = 0
+                      quiet = 0
+                      if (preLen > 0) {            // 말 시작 직전 100ms 보존
+                          System.arraycopy(pre, 0, seg, 0, preLen)
+                          len = preLen
+                      }
+                  }
+                  if (inSeg) {
+                      System.arraycopy(f, 0, seg, len, n)
+                      len += n
+                      if (loud) {
+                          speech++
+                          quiet = 0
+                      } else {
+                          quiet++
+                      }
+                      val end = quiet >= QUIET_END || (len >= SOFT_LEN && quiet >= 2) || len + FRAME > MAX
+                      if (end) {
+                          if (speech >= MIN_SPEECH) out = seg.copyOf(len)
+                          inSeg = false
+                          len = 0
+                          speech = 0
+                          quiet = 0
+                      }
+                  }
+                  System.arraycopy(f, 0, pre, 0, n)
+                  preLen = n
+                  return out
+              }
+
+              companion object {
+                  const val FRAME = 1600              // 100ms @16kHz
+                  const val MAX = 16000 * 6           // 한 덩어리 최대 6초
+                  const val SOFT_LEN = 16000 * 3      // 3초 넘으면 짧은 쉼에도 끊음
+                  const val QUIET_END = 5             // 0.5초 조용하면 문장 끝
+                  const val MIN_SPEECH = 5            // 최소 0.5초는 소리가 있어야 번역
+                  const val MIN_THRESH = 300.0
+                  const val MAX_THRESH = 1500.0
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/realtime/translator/service/Sub.kt <<'EOF'
+          package com.realtime.translator.service
+
+          /** 프롬프트 생성과 모델 출력 정리 (안드로이드 의존 없음) */
+          object Sub {
+              fun prompt(lang: String, glossary: String, prev: List<String>): String {
+                  val l = when (lang) {
+                      "ja" -> "일본어"
+                      "zh" -> "중국어"
+                      "en" -> "영어"
+                      "ru" -> "러시아어"
+                      else -> "일본어, 중국어, 영어, 러시아어 중 하나"
+                  }
+                  val sb = StringBuilder()
+                  sb.append("너는 실시간 영상(주로 애니메이션) 자막 번역기다. 입력 음성의 언어는 ").append(l).append("이다. ")
+                  sb.append("들린 대사를 자연스러운 한국어 구어체 자막으로 번역해서 번역문만 출력해라. ")
+                  sb.append("원문, 설명, 따옴표, 화자 표시, 괄호 설명은 쓰지 마라. ")
+                  sb.append("말투(반말/존댓말)는 화자의 분위기에 맞추고, 한 줄은 짧고 읽기 쉽게 써라. ")
+                  sb.append("대사가 없거나 음악, 효과음, 소음뿐이면 정확히 NONE 이라고만 출력해라.")
+                  if (glossary.isNotBlank()) {
+                      sb.append("\n용어집(이 표기를 우선 사용): ").append(glossary.trim().take(500))
+                  }
+                  if (prev.isNotEmpty()) {
+                      sb.append("\n직전 자막(문맥 참고용, 다시 출력하지 마라): ").append(prev.joinToString(" / "))
+                  }
+                  return sb.toString()
+              }
+
+              /** 자막으로 쓸 수 없는 출력(NONE, (음악) 같은 상황 설명)은 null */
+              fun clean(raw: String): String? {
+                  var t = raw.replace("\n", " ").trim()
+                  if (t.isEmpty()) return null
+                  if (t.startsWith("NONE", ignoreCase = true)) return null
+                  t = t.trim('"', '“', '”', '「', '」', '『', '』').trim()
+                  if (t.isEmpty()) return null
+                  val wrapped = (t.startsWith("(") && t.endsWith(")")) ||
+                      (t.startsWith("[") && t.endsWith("]")) ||
+                      (t.startsWith("（") && t.endsWith("）"))
+                  if (wrapped && t.length < 24) return null
+                  return t
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/realtime/translator/service/Wav.kt <<'EOF'
+          package com.realtime.translator.service
+
+          import java.nio.ByteBuffer
+          import java.nio.ByteOrder
+
+          /** 16bit mono PCM -> WAV 바이트 */
+          object Wav {
+              fun encode(pcm: ShortArray, sampleRate: Int): ByteArray {
+                  val dataLen = pcm.size * 2
+                  val bb = ByteBuffer.allocate(44 + dataLen).order(ByteOrder.LITTLE_ENDIAN)
+                  bb.put("RIFF".toByteArray())
+                  bb.putInt(36 + dataLen)
+                  bb.put("WAVE".toByteArray())
+                  bb.put("fmt ".toByteArray())
+                  bb.putInt(16)
+                  bb.putShort(1)            // PCM
+                  bb.putShort(1)            // mono
+                  bb.putInt(sampleRate)
+                  bb.putInt(sampleRate * 2) // byte rate
+                  bb.putShort(2)            // block align
+                  bb.putShort(16)           // bits
+                  bb.put("data".toByteArray())
+                  bb.putInt(dataLen)
+                  for (s in pcm) bb.putShort(s)
+                  return bb.array()
+              }
           }
           EOF
 
@@ -216,15 +1220,17 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Setup Gradle 8.5
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.5'
+
       - name: Build APK
-        run: |
-          gradle wrapper --gradle-version 8.5
-          chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: realtime-translator-APK
           path: app/build/outputs/apk/debug/*.apk
-
+          if-no-files-found: error
