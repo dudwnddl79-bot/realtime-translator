@@ -916,6 +916,8 @@ jobs:
           /** 음성(PCM 16kHz mono) -> 한국어 자막. Gemini 한 번 호출로 인식+번역을 동시에 처리. */
           object Translator {
               const val DEFAULT_MODEL = "gemini-3.8-flash"
+              private const val MIN_GAP = 1200L
+              private const val MAX_GAP = 12000L
 
               // 모델이 thinkingLevel 을 거부하면(400) 한 번만 끄고 재시도
               @Volatile private var thinking = true
@@ -942,15 +944,58 @@ jobs:
                   return if (err != null) "❌ " + err else "✅ 키와 모델 정상 (" + cfg.model + ", " + ms + "ms)"
               }
 
+              // 호출 간격 조절: 429 가 오면 간격을 늘리고, 성공하면 천천히 줄인다 (워커 2개가 공유)
+              private val gate = Object()
+              @Volatile private var minGapMs = MIN_GAP
+              private var nextAllowed = 0L
+
+              private fun waitTurn() {
+                  val wait: Long
+                  synchronized(gate) {
+                      val now = System.currentTimeMillis()
+                      val t = maxOf(now, nextAllowed)
+                      nextAllowed = t + minGapMs
+                      wait = t - now
+                  }
+                  if (wait > 0) Thread.sleep(wait)
+              }
+
+              private fun penalize(delayMs: Long) {
+                  minGapMs = (minGapMs * 3 / 2).coerceAtMost(MAX_GAP)
+                  synchronized(gate) {
+                      nextAllowed = maxOf(nextAllowed, System.currentTimeMillis() + delayMs)
+                  }
+              }
+
+              /** 429 응답에 들어있는 "retryDelay": "23s" 를 밀리초로. 없으면 5초 */
+              private fun retryDelayMs(body: String): Long {
+                  val m = Regex("\"retryDelay\"\\s*:\\s*\"([0-9.]+)s\"").find(body) ?: return 5000L
+                  return ((m.groupValues[1].toDoubleOrNull() ?: 5.0) * 1000).toLong()
+              }
+
+              private fun isDaily(body: String): Boolean {
+                  val b = body.lowercase()
+                  return b.contains("perday") || b.contains("per day")
+              }
+
               private fun send(parts: JSONArray, cfg: Cfg, retry: Boolean): TranslateResult {
                   var attempt = 0
                   while (true) {
                       attempt++
                       try {
+                          if (retry) waitTurn()
                           var r = call(parts, cfg, thinking)
                           if (r.code == 400 && thinking) {
                               thinking = false
                               r = call(parts, cfg, false)
+                          }
+                          if (r.code == 429 && retry) {
+                              val d = retryDelayMs(r.body)
+                              penalize(d)
+                              // 분당 한도이고 오래 안 기다려도 되면 같은 구간을 한 번 더 시도 (버리지 않음)
+                              if (!isDaily(r.body) && d <= 15000L && attempt < 3) continue
+                          } else if (r.code in 200..299 && retry) {
+                              minGapMs = (minGapMs * 9 / 10).coerceAtLeast(MIN_GAP)
                           }
                           if (r.code >= 500 && retry && attempt < 2) {
                               Thread.sleep(400)
@@ -1002,11 +1047,17 @@ jobs:
                       } catch (e: Exception) {
                           r.body
                       }
+                      if (r.code == 429) {
+                          return TranslateResult(
+                              null,
+                              if (isDaily(r.body)) "요청 한도 초과: 하루 한도를 다 썼어요 (한국시간 오후 4~5시경 초기화). 모델 이름을 바꾸거나 결제를 연결하세요"
+                              else "요청 한도 초과: 분당 한도예요. 자동으로 속도를 줄이는 중이라 자막이 조금 늦어져요"
+                          )
+                      }
                       val head = when (r.code) {
                           400 -> "요청 오류"
                           401, 403 -> "API 키/권한 오류"
                           404 -> "모델 이름 오류"
-                          429 -> "요청 한도 초과(잠시 후 자동 재시도)"
                           else -> "서버 오류"
                       }
                       return TranslateResult(null, head + " (" + r.code + ") " + msg.take(60))
@@ -1127,8 +1178,8 @@ jobs:
 
               companion object {
                   const val FRAME = 1600              // 100ms @16kHz
-                  const val MAX = 16000 * 6           // 한 덩어리 최대 6초
-                  const val SOFT_LEN = 16000 * 3      // 3초 넘으면 짧은 쉼에도 끊음
+                  const val MAX = 16000 * 8           // 한 덩어리 최대 8초 (호출 횟수를 줄여 무료 한도 절약)
+                  const val SOFT_LEN = 16000 * 4      // 4초 넘으면 짧은 쉼에도 끊음
                   const val QUIET_END = 5             // 0.5초 조용하면 문장 끝
                   const val MIN_SPEECH = 5            // 최소 0.5초는 소리가 있어야 번역
                   const val MIN_THRESH = 300.0
